@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
 class SpaceBus {
   constructor() {
@@ -34,6 +35,24 @@ class SpaceBus {
     
     this.camera.position.copy(this.thirdPersonPosition);
     this.cameraRig.add(this.camera);
+    
+    // Add first-person movement variables
+    this.moveForward = false;
+    this.moveBackward = false;
+    this.moveLeft = false;
+    this.moveRight = false;
+    this.canJump = false;
+    this.velocity = new THREE.Vector3();
+    this.direction = new THREE.Vector3();
+    this.fpControls = null;
+    this.walkingSpeed = 5.0;
+    this.controlsInfo = document.getElementById('controls-info');
+    
+    // Create collision boundaries
+    this.createCollisionBoundaries();
+    
+    this.setupFirstPersonControls();
+    this.setupMovementControls();
     
     this.animate();
     
@@ -306,23 +325,121 @@ class SpaceBus {
     document.body.appendChild(button);
   }
 
+  createCollisionBoundaries() {
+    // Create invisible boundaries for collision detection
+    this.boundaries = [];
+    
+    // Bus interior boundaries (slightly smaller than visible walls)
+    const boundaryGeometry = new THREE.BoxGeometry(7.3, 3.3, 15.3);
+    const boundaryMaterial = new THREE.MeshBasicMaterial({
+      visible: false
+    });
+    this.mainBoundary = new THREE.Mesh(boundaryGeometry, boundaryMaterial);
+    this.bus.add(this.mainBoundary);
+    
+    // Add seat collision boxes
+    for(let side of [-1, 1]) {
+      for(let z = -6; z <= 6; z += 3) {
+        const seatBoundary = new THREE.Box3();
+        const seatSize = new THREE.Vector3(1.2, 1.7, 1.2);
+        const seatPos = new THREE.Vector3(side * 3, -1, z);
+        seatBoundary.setFromCenterAndSize(seatPos, seatSize);
+        this.boundaries.push(seatBoundary);
+      }
+    }
+  }
+
+  setupFirstPersonControls() {
+    this.fpControls = new PointerLockControls(this.camera, document.body);
+    
+    this.fpControls.addEventListener('lock', () => {
+      this.controlsInfo.style.display = 'none';
+    });
+
+    this.fpControls.addEventListener('unlock', () => {
+      if (this.isFirstPerson) {
+        this.controlsInfo.style.display = 'block';
+      }
+    });
+  }
+
+  setupMovementControls() {
+    const onKeyDown = (event) => {
+      if (!this.isFirstPerson) return;
+      
+      switch (event.code) {
+        case 'ArrowUp':
+        case 'KeyW':
+          this.moveForward = true;
+          break;
+        case 'ArrowDown':
+        case 'KeyS':
+          this.moveBackward = true;
+          break;
+        case 'ArrowLeft':
+        case 'KeyA':
+          this.moveLeft = true;
+          break;
+        case 'ArrowRight':
+        case 'KeyD':
+          this.moveRight = true;
+          break;
+      }
+    };
+
+    const onKeyUp = (event) => {
+      if (!this.isFirstPerson) return;
+      
+      switch (event.code) {
+        case 'ArrowUp':
+        case 'KeyW':
+          this.moveForward = false;
+          break;
+        case 'ArrowDown':
+        case 'KeyS':
+          this.moveBackward = false;
+          break;
+        case 'ArrowLeft':
+        case 'KeyA':
+          this.moveLeft = false;
+          break;
+        case 'ArrowRight':
+        case 'KeyD':
+          this.moveRight = false;
+          break;
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+  }
+
   toggleView() {
     this.isFirstPerson = !this.isFirstPerson;
     
-    // Disable orbit controls in first person mode
-    this.controls.enabled = !this.isFirstPerson;
-    
-    // Smoothly transition the camera
-    const targetPosition = this.isFirstPerson ? this.firstPersonPosition : this.thirdPersonPosition;
-    
-    new TWEEN.Tween(this.camera.position)
-      .to({
-        x: targetPosition.x,
-        y: targetPosition.y,
-        z: targetPosition.z
-      }, 1000)
-      .easing(TWEEN.Easing.Cubic.InOut)
-      .start();
+    if (this.isFirstPerson) {
+      this.controls.enabled = false;
+      this.fpControls.lock();
+      this.controlsInfo.style.display = 'block';
+      
+      // Position the camera at head height inside the bus
+      this.camera.position.set(0, 0.5, 6);
+      this.camera.rotation.set(0, Math.PI, 0);
+    } else {
+      this.controls.enabled = true;
+      this.fpControls.unlock();
+      this.controlsInfo.style.display = 'none';
+      
+      // Return to third-person view
+      new TWEEN.Tween(this.camera.position)
+        .to({
+          x: this.thirdPersonPosition.x,
+          y: this.thirdPersonPosition.y,
+          z: this.thirdPersonPosition.z
+        }, 1000)
+        .easing(TWEEN.Easing.Cubic.InOut)
+        .start();
+    }
   }
 
   updateBusPosition() {
@@ -375,10 +492,59 @@ class SpaceBus {
     }
   }
 
+  updateFirstPersonMovement(delta) {
+    if (!this.isFirstPerson || !this.fpControls.isLocked) return;
+
+    // Calculate movement direction
+    this.direction.z = Number(this.moveForward) - Number(this.moveBackward);
+    this.direction.x = Number(this.moveRight) - Number(this.moveLeft);
+    this.direction.normalize();
+
+    // Calculate new position
+    const moveX = this.direction.x * this.walkingSpeed * delta;
+    const moveZ = this.direction.z * this.walkingSpeed * delta;
+
+    // Test new position
+    const newPosition = this.camera.position.clone();
+    newPosition.x += moveX;
+    newPosition.z += moveZ;
+
+    // Check if new position is within bus boundaries
+    const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
+    const margin = 0.3; // Distance to keep from walls
+    
+    // Shrink the boundary box by the margin
+    busBox.min.add(new THREE.Vector3(margin, margin, margin));
+    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+    // Only update position if it's within bounds and not colliding with seats
+    let canMove = true;
+    
+    // Check seat collisions
+    const playerBox = new THREE.Box3();
+    const playerSize = new THREE.Vector3(0.4, 1.7, 0.4);
+    playerBox.setFromCenterAndSize(newPosition, playerSize);
+    
+    for (const boundary of this.boundaries) {
+      if (playerBox.intersectsBox(boundary)) {
+        canMove = false;
+        break;
+      }
+    }
+
+    if (canMove && busBox.containsPoint(newPosition)) {
+      this.camera.position.x += moveX;
+      this.camera.position.z += moveZ;
+    }
+  }
+
   animate() {
     requestAnimationFrame(() => this.animate());
     
+    const delta = 0.016; // Assuming ~60fps
+    
     this.updateBusPosition();
+    this.updateFirstPersonMovement(delta);
     
     // Rotate nebulae slowly
     this.nebulae.forEach(nebula => {
