@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TWEEN } from 'tween';
+import Tween from 'tween';
 
 class SpaceBus {
   constructor() {
@@ -119,7 +119,7 @@ class SpaceBus {
     this.controls.update();
     
     // Update tweens
-    TWEEN.update();
+    Tween.update();
     
     this.renderer.render(this.scene, this.camera);
   }
