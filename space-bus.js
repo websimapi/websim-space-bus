@@ -10,6 +10,24 @@ class SpaceBus {
     this.createStarfield();
     this.createDetailedBus();
     this.setupPassengerList();
+    
+    // Initialize movement parameters
+    this.busPath = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(100, 50, -100),
+      new THREE.Vector3(-100, -30, -200),
+      new THREE.Vector3(50, 80, -300),
+      new THREE.Vector3(-50, -50, -400),
+    ]);
+    this.pathProgress = 0;
+    this.movementSpeed = 0.0001;
+    
+    // Create a chase camera rig
+    this.cameraRig = new THREE.Object3D();
+    this.scene.add(this.cameraRig);
+    this.camera.position.set(0, 5, 20);
+    this.cameraRig.add(this.camera);
+    
     this.animate();
     
     this.room.party.subscribe((peers) => {
@@ -60,20 +78,49 @@ class SpaceBus {
     const starGeometry = new THREE.BufferGeometry();
     const starMaterial = new THREE.PointsMaterial({
       color: 0xFFFFFF,
-      size: 0.1,
+      size: 0.3,
+      sizeAttenuation: true
     });
 
     const starVertices = [];
-    for(let i = 0; i < 10000; i++) {
-      const x = (Math.random() - 0.5) * 2000;
-      const y = (Math.random() - 0.5) * 2000;
-      const z = (Math.random() - 0.5) * 2000;
+    for(let i = 0; i < 20000; i++) {
+      const x = (Math.random() - 0.5) * 4000;
+      const y = (Math.random() - 0.5) * 4000;
+      const z = (Math.random() - 0.5) * 4000;
       starVertices.push(x, y, z);
     }
 
     starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
     this.starfield = new THREE.Points(starGeometry, starMaterial);
     this.scene.add(this.starfield);
+
+    // Create distant nebulae for visual interest
+    this.createNebula();
+  }
+
+  createNebula() {
+    const nebulaCount = 5;
+    this.nebulae = [];
+    
+    for(let i = 0; i < nebulaCount; i++) {
+      const geometry = new THREE.SphereGeometry(100, 32, 32);
+      const material = new THREE.MeshPhongMaterial({
+        color: new THREE.Color().setHSL(Math.random(), 0.8, 0.5),
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide
+      });
+      
+      const nebula = new THREE.Mesh(geometry, material);
+      nebula.position.set(
+        (Math.random() - 0.5) * 2000,
+        (Math.random() - 0.5) * 2000,
+        (Math.random() - 0.5) * 2000
+      );
+      nebula.scale.setScalar(Math.random() * 5 + 5);
+      this.scene.add(nebula);
+      this.nebulae.push(nebula);
+    }
   }
 
   createDetailedBus() {
@@ -206,16 +253,68 @@ class SpaceBus {
     });
   }
 
+  updateBusPosition() {
+    // Update the path progress
+    this.pathProgress += this.movementSpeed;
+    if (this.pathProgress >= 1) {
+      this.pathProgress = 0;
+      
+      // Generate new path points when we complete a cycle
+      const lastPoint = this.busPath.getPoint(1);
+      const newPoints = [
+        lastPoint,
+        new THREE.Vector3(
+          lastPoint.x + (Math.random() - 0.5) * 200,
+          lastPoint.y + (Math.random() - 0.5) * 200,
+          lastPoint.z - 300
+        ),
+        new THREE.Vector3(
+          lastPoint.x + (Math.random() - 0.5) * 200,
+          lastPoint.y + (Math.random() - 0.5) * 200,
+          lastPoint.z - 600
+        )
+      ];
+      this.busPath = new THREE.CatmullRomCurve3(newPoints);
+    }
+
+    // Get the current position on the path
+    const currentPos = this.busPath.getPoint(this.pathProgress);
+    this.bus.position.copy(currentPos);
+
+    // Calculate direction and orient the bus
+    const tangent = this.busPath.getTangent(this.pathProgress);
+    const lookAtPoint = currentPos.clone().add(tangent);
+    this.bus.lookAt(lookAtPoint);
+    
+    // Add some gentle rolling motion
+    this.bus.rotation.z = Math.sin(Date.now() * 0.001) * 0.1;
+
+    // Update camera rig position to follow the bus
+    this.cameraRig.position.lerp(currentPos, 0.1);
+    this.cameraRig.lookAt(lookAtPoint);
+  }
+
   animate() {
     requestAnimationFrame(() => this.animate());
     
-    // Rotate the bus more slowly due to its larger size
-    this.bus.rotation.y += 0.0005;
+    this.updateBusPosition();
     
-    this.starfield.rotation.z += 0.0005;
+    // Rotate nebulae slowly
+    this.nebulae.forEach(nebula => {
+      nebula.rotation.y += 0.001;
+      nebula.rotation.z += 0.0005;
+    });
+
+    // Make stars twinkle
+    const positions = this.starfield.geometry.attributes.position.array;
+    for(let i = 0; i < positions.length; i += 3) {
+      positions[i + 1] += (Math.random() - 0.5) * 0.1;
+    }
+    this.starfield.geometry.attributes.position.needsUpdate = true;
+    
+    // Update controls and render
     this.controls.update();
     TWEEN.update();
-    
     this.renderer.render(this.scene, this.camera);
   }
 }
