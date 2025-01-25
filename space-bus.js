@@ -37,15 +37,19 @@ class SpaceBus {
     
     // Enhanced physics parameters
     this.playerVelocity = new THREE.Vector3();
-    this.damping = 0.95; // Slightly stronger air resistance
-    this.pullForce = 15.0; // Increased for more noticeable pull
-    this.pushForce = 25.0; // Increased for more dramatic push-offs
+    this.damping = 0.98; // Less damping for smoother movement
+    this.pullForce = 25.0; // Stronger pull force
+    this.pushForce = 35.0; // Stronger push force
     this.minGrabDistance = 0.5;
-    this.maxGrabDistance = 5.0;
+    this.maxGrabDistance = 8.0; // Increased grab range
     this.grabObjects = []; // Array to store all grabbable objects
 
     this.createDetailedBus();
     this.setupGrabSystem();
+    
+    // Add floating objects system
+    this.floatingObjects = [];
+    this.createFloatingObjects();
     
     this.animate();
     
@@ -486,25 +490,143 @@ class SpaceBus {
     this.dragDirection.set(0, 0, 0);
   }
 
+  createFloatingObjects() {
+    const items = [
+      { geometry: new THREE.BoxGeometry(0.3, 0.4, 0.1), color: 0x4444ff, name: 'book' },
+      { geometry: new THREE.SphereGeometry(0.15, 16, 16), color: 0xff4444, name: 'apple' },
+      { geometry: new THREE.CylinderGeometry(0.1, 0.1, 0.3, 16), color: 0x444444, name: 'pen' },
+      { geometry: new THREE.BoxGeometry(0.4, 0.3, 0.2), color: 0x44ff44, name: 'lunchbox' },
+      { geometry: new THREE.SphereGeometry(0.2, 16, 16), color: 0xffff44, name: 'ball' },
+      { geometry: new THREE.BoxGeometry(0.25, 0.35, 0.25), color: 0xff44ff, name: 'coffee-cup' }
+    ];
+
+    for (let i = 0; i < 15; i++) {
+      const item = items[Math.floor(Math.random() * items.length)];
+      const object = new THREE.Mesh(
+        item.geometry,
+        new THREE.MeshPhongMaterial({ color: item.color })
+      );
+
+      // Random position inside bus
+      object.position.set(
+        (Math.random() - 0.5) * 6,
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 12
+      );
+
+      // Random initial velocity
+      object.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.1,
+        (Math.random() - 0.5) * 0.1,
+        (Math.random() - 0.5) * 0.1
+      );
+
+      object.angularVelocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.05,
+        (Math.random() - 0.5) * 0.05,
+        (Math.random() - 0.5) * 0.05
+      );
+
+      object.userData.isGrabbable = true;
+      object.userData.type = 'floating-item';
+      object.userData.name = item.name;
+      
+      this.bus.add(object);
+      this.floatingObjects.push(object);
+      this.grabObjects.push(object);
+    }
+  }
+
+  updateFloatingObjects(delta) {
+    const busBox = new THREE.Box3().setFromObject(this.bus);
+    const margin = 0.3;
+    busBox.min.add(new THREE.Vector3(margin, margin, margin));
+    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+    // Create collision boxes for all fixed objects
+    const collisionBoxes = this.grabObjects
+      .filter(obj => obj.userData.type !== 'floating-item')
+      .map(obj => new THREE.Box3().setFromObject(obj));
+
+    for (const object of this.floatingObjects) {
+      // Apply velocity
+      object.position.add(object.velocity.clone().multiplyScalar(delta));
+      
+      // Apply rotation
+      object.rotation.x += object.angularVelocity.x;
+      object.rotation.y += object.angularVelocity.y;
+      object.rotation.z += object.angularVelocity.z;
+
+      // Check bus bounds
+      const objectBox = new THREE.Box3().setFromObject(object);
+      if (!busBox.containsBox(objectBox)) {
+        // Bounce off bus walls
+        const normal = this.calculateCollisionNormal(object.position, busBox);
+        this.bounceObject(object, normal, 0.8);
+      }
+
+      // Check collisions with fixed objects
+      for (const box of collisionBoxes) {
+        if (objectBox.intersectsBox(box)) {
+          const normal = this.calculateCollisionNormal(object.position, box);
+          this.bounceObject(object, normal, 0.8);
+        }
+      }
+
+      // Check collisions with other floating objects
+      for (const other of this.floatingObjects) {
+        if (other === object) continue;
+        
+        const otherBox = new THREE.Box3().setFromObject(other);
+        if (objectBox.intersectsBox(otherBox)) {
+          // Calculate collision response
+          const normal = object.position.clone().sub(other.position).normalize();
+          this.bounceObject(object, normal, 0.8);
+          this.bounceObject(other, normal.multiplyScalar(-1), 0.8);
+        }
+      }
+
+      // Apply damping
+      object.velocity.multiplyScalar(0.99);
+      object.angularVelocity.multiplyScalar(0.99);
+    }
+  }
+
+  bounceObject(object, normal, restitution) {
+    const dot = object.velocity.dot(normal);
+    if (dot < 0) {
+      normal.multiplyScalar(2 * dot);
+      object.velocity.sub(normal);
+      object.velocity.multiplyScalar(restitution);
+    }
+  }
+
   updateFirstPersonMovement(delta) {
     if (!this.isFirstPerson) return;
 
-    if (this.isGrabbing && this.grabbedObject && !this.isDragging) {
-      // Enhanced pull towards grab point when holding
-      const toGrab = this.grabPoint.clone().sub(this.camera.position);
-      const distance = toGrab.length();
-      
-      if (distance > this.minGrabDistance) {
-        const pullStrength = Math.min(1.0, distance / this.maxGrabDistance);
-        toGrab.normalize().multiplyScalar(this.pullForce * pullStrength * delta);
-        this.playerVelocity.add(toGrab);
+    if (this.isGrabbing && this.grabbedObject) {
+      if (!this.isDragging) {
+        // Pull towards grab point when holding
+        const toGrab = this.grabPoint.clone().sub(this.camera.position);
+        const distance = toGrab.length();
+        
+        if (distance > this.minGrabDistance) {
+          const pullStrength = Math.min(1.0, distance / this.maxGrabDistance);
+          toGrab.normalize().multiplyScalar(this.pullForce * pullStrength * delta);
+          this.playerVelocity.add(toGrab);
+        }
+      } else {
+        // Apply drag force for push-off movement
+        if (this.dragDirection.lengthSq() > 0.001) {
+          this.playerVelocity.add(this.dragDirection.clone().multiplyScalar(delta));
+        }
       }
     }
 
-    // Apply velocity with damping
+    // Apply velocity with improved damping
     this.playerVelocity.multiplyScalar(this.damping);
     
-    // Apply minimum velocity threshold to prevent micro-movements
+    // Apply minimum velocity threshold
     if (this.playerVelocity.lengthSq() < 0.0001) {
       this.playerVelocity.set(0, 0, 0);
     }
@@ -513,7 +635,7 @@ class SpaceBus {
     const newPosition = this.camera.position.clone()
       .add(this.playerVelocity.clone().multiplyScalar(delta));
 
-    // Check bounds with improved collision response
+    // Collision checking with bus bounds
     const busBox = new THREE.Box3().setFromObject(this.bus);
     const margin = 0.3;
     busBox.min.add(new THREE.Vector3(margin, margin, margin));
@@ -522,9 +644,9 @@ class SpaceBus {
     if (busBox.containsPoint(newPosition)) {
       this.camera.position.copy(newPosition);
     } else {
-      // Enhanced bounce physics
+      // Bounce physics
       const normal = this.calculateCollisionNormal(newPosition, busBox);
-      this.handleCollision(normal);
+      this.playerVelocity.reflect(normal).multiplyScalar(0.5);
     }
   }
 
@@ -545,16 +667,6 @@ class SpaceBus {
     normal.setComponent(maxIndex, Math.sign(dirToCenter.getComponent(maxIndex)));
     
     return normal;
-  }
-
-  handleCollision(normal) {
-    // Reflect velocity about the normal with energy loss
-    const dot = this.playerVelocity.dot(normal);
-    if (dot < 0) {
-      normal.multiplyScalar(2 * dot);
-      this.playerVelocity.sub(normal);
-      this.playerVelocity.multiplyScalar(0.5); // Energy loss on collision
-    }
   }
 
   toggleView() {
@@ -637,6 +749,7 @@ class SpaceBus {
     
     this.updateBusPosition();
     this.updateFirstPersonMovement(delta);
+    this.updateFloatingObjects(delta);
     
     // Rotate nebulae slowly
     this.nebulae.forEach(nebula => {
