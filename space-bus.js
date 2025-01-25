@@ -361,7 +361,10 @@ class SpaceBus {
     this.playerVelocity = new THREE.Vector3();
     this.dragDirection = new THREE.Vector3();
     this.isGrabbing = false;
+    this.grabStartTime = 0;
     this.grabDistance = 0;
+    this.dragStartPosition = new THREE.Vector2();
+    this.isDragging = false;
     
     // Add mouse event listeners for standard mouse interaction
     document.addEventListener('mousemove', (event) => {
@@ -370,16 +373,29 @@ class SpaceBus {
       this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
       if (this.isGrabbing && this.isFirstPerson) {
-        // Calculate drag direction based on mouse movement in world space
-        const movementX = event.movementX / window.innerWidth;
-        const movementY = event.movementY / window.innerHeight;
-        
-        this.dragDirection.set(
-          movementX * 2,
-          -movementY * 2,
-          0
-        );
-        this.dragDirection.applyQuaternion(this.camera.quaternion);
+        if (!this.isDragging) {
+          // Check if we've moved enough to start dragging
+          const dx = event.clientX - this.dragStartPosition.x;
+          const dy = event.clientY - this.dragStartPosition.y;
+          const dragDistance = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dragDistance > 10) { // Start drag after 10px movement
+            this.isDragging = true;
+          }
+        }
+
+        if (this.isDragging) {
+          // Calculate drag direction based on mouse movement in world space
+          const movementX = event.movementX / window.innerWidth;
+          const movementY = event.movementY / window.innerHeight;
+          
+          this.dragDirection.set(
+            movementX * 2,
+            -movementY * 2,
+            0
+          );
+          this.dragDirection.applyQuaternion(this.camera.quaternion);
+        }
       }
 
       // Rotate camera in first person based on mouse position
@@ -390,7 +406,7 @@ class SpaceBus {
     });
 
     document.addEventListener('mousedown', (event) => {
-      if (!this.isFirstPerson) return;
+      if (!this.isFirstPerson || this.isGrabbing) return;
       
       this.raycaster.setFromCamera(this.mouse, this.camera);
       
@@ -403,10 +419,13 @@ class SpaceBus {
       
       if (intersects.length > 0 && intersects[0].distance < 5) { 
         this.isGrabbing = true;
+        this.isDragging = false;
         this.grabbedObject = intersects[0].object;
         this.grabStartPosition.copy(intersects[0].point);
         this.grabDistance = intersects[0].distance;
-        this.playerVelocity.set(0, 0, 0); 
+        this.grabStartTime = Date.now();
+        this.dragStartPosition = new THREE.Vector2(event.clientX, event.clientY);
+        this.playerVelocity.set(0, 0, 0);
         
         // Visual feedback for grabbed object
         const originalColor = this.grabbedObject.material.color.clone();
@@ -420,16 +439,19 @@ class SpaceBus {
     });
 
     document.addEventListener('mouseup', () => {
-      if (!this.isFirstPerson) return;
+      if (!this.isFirstPerson || !this.isGrabbing) return;
       
-      if (this.isGrabbing) {
-        // Apply impulse when releasing grab
-        const pushStrength = 3;
+      const grabDuration = Date.now() - this.grabStartTime;
+      
+      if (this.isDragging) {
+        // Apply impulse when releasing drag
+        const pushStrength = 5;
         this.playerVelocity.copy(this.dragDirection).multiplyScalar(pushStrength);
-        
-        this.isGrabbing = false;
-        this.grabbedObject = null;
       }
+      
+      this.isGrabbing = false;
+      this.isDragging = false;
+      this.grabbedObject = null;
     });
 
     // Add a cursor element to show what can be grabbed
@@ -443,10 +465,6 @@ class SpaceBus {
     this.cursor.style.transform = 'translate(-50%, -50%)';
     this.cursor.style.display = 'none';
     document.body.appendChild(this.cursor);
-  }
-
-  setupMovementControls() {
-    // Removed keyboard controls
   }
 
   updateFirstPersonMovement(delta) {
@@ -475,46 +493,44 @@ class SpaceBus {
     }
 
     if (this.isGrabbing && this.grabbedObject) {
-      // When grabbing, move toward or away from grab point based on drag
-      const moveSpeed = 3;
-      const dragAmount = this.dragDirection.length();
-      
-      if (dragAmount > 0.01) {
-        const targetPosition = this.camera.position.clone()
-          .add(this.dragDirection.multiplyScalar(moveSpeed * delta));
-        
-        // Check if new position is within bounds
-        const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
-        const margin = 0.3;
-        
-        busBox.min.add(new THREE.Vector3(margin, margin, margin));
-        busBox.max.sub(new THREE.Vector3(margin, margin, margin));
-
-        if (busBox.containsPoint(targetPosition)) {
-          this.camera.position.copy(targetPosition);
+      if (this.isDragging) {
+        // When dragging, accumulate force for push-off
+        const dragAmount = this.dragDirection.length();
+        if (dragAmount > 0.01) {
+          this.dragDirection.normalize();
         }
-      }
-    } else {
-      // Apply velocity and damping when floating
-      this.playerVelocity.multiplyScalar(0.98); 
- 
-      const newPosition = this.camera.position.clone()
-        .add(this.playerVelocity.clone().multiplyScalar(delta));
-      
-      // Check bounds before applying movement
-      const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
-      const margin = 0.3;
-      
-      busBox.min.add(new THREE.Vector3(margin, margin, margin));
-      busBox.max.sub(new THREE.Vector3(margin, margin, margin));
-
-      if (busBox.containsPoint(newPosition)) {
-        this.camera.position.copy(newPosition);
       } else {
-        // Bounce off walls
-        this.playerVelocity.multiplyScalar(-0.5);
+        // When just holding, pull towards grab point
+        const pullSpeed = 2;
+        const targetPosition = this.grabStartPosition.clone();
+        const direction = targetPosition.sub(this.camera.position).normalize();
+        this.playerVelocity.add(direction.multiplyScalar(pullSpeed * delta));
       }
     }
+
+    // Apply velocity and damping when floating
+    this.playerVelocity.multiplyScalar(0.98);
+
+    const newPosition = this.camera.position.clone()
+      .add(this.playerVelocity.clone().multiplyScalar(delta));
+    
+    // Check bounds before applying movement
+    const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
+    const margin = 0.3;
+    
+    busBox.min.add(new THREE.Vector3(margin, margin, margin));
+    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+    if (busBox.containsPoint(newPosition)) {
+      this.camera.position.copy(newPosition);
+    } else {
+      // Bounce off walls with reduced velocity
+      this.playerVelocity.multiplyScalar(-0.5);
+    }
+  }
+
+  setupMovementControls() {
+    // Removed keyboard controls
   }
 
   toggleView() {
