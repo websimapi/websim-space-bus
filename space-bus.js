@@ -186,7 +186,7 @@ class SpaceBus {
     for (let side of [-1, 1]) {
       for (let z = -6; z <= 6; z += 3) {
         // Seat cushion
-        const seatCushion = new THREEca.Mesh(
+        const seatCushion = new THREE.Mesh(
           new THREE.BoxGeometry(1.2, 0.3, 1.2),
           seatMaterial.clone()
         );
