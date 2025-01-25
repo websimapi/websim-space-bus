@@ -361,57 +361,116 @@ class SpaceBus {
         this.controlsInfo.style.display = 'block';
       }
     });
+
+    // Raycaster for object grabbing
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.grabbedObject = null;
+    this.grabStartPosition = new THREE.Vector3();
+    this.playerVelocity = new THREE.Vector3();
+    this.dragDirection = new THREE.Vector3();
+    this.isGrabbing = false;
+    this.grabDistance = 0;
+    
+    // Add mouse event listeners
+    document.addEventListener('mousedown', (event) => {
+      if (!this.isFirstPerson || !this.fpControls.isLocked) return;
+      
+      this.mouse.x = 0; // Center of screen in pointer lock
+      this.mouse.y = 0;
+      
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      
+      // Get all grabbable objects (seats, walls, etc.)
+      const grabbables = [...this.bus.children].filter(obj => 
+        obj.isMesh && !obj.material.transparent
+      );
+      
+      const intersects = this.raycaster.intersectObjects(grabbables);
+      
+      if (intersects.length > 0 && intersects[0].distance < 3) { // Only grab within 3 units
+        this.isGrabbing = true;
+        this.grabbedObject = intersects[0].object;
+        this.grabStartPosition.copy(intersects[0].point);
+        this.grabDistance = intersects[0].distance;
+        this.playerVelocity.set(0, 0, 0); // Stop current momentum
+      }
+    });
+
+    document.addEventListener('mousemove', (event) => {
+      if (!this.isGrabbing || !this.isFirstPerson || !this.fpControls.isLocked) return;
+      
+      // Calculate drag direction based on mouse movement
+      this.dragDirection.set(
+        event.movementX * 0.01,
+        -event.movementY * 0.01,
+        0
+      );
+      this.dragDirection.applyQuaternion(this.camera.quaternion);
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!this.isFirstPerson || !this.fpControls.isLocked) return;
+      
+      if (this.isGrabbing) {
+        // Apply impulse when releasing grab
+        const pushStrength = 2;
+        this.playerVelocity.copy(this.dragDirection).multiplyScalar(pushStrength);
+        
+        this.isGrabbing = false;
+        this.grabbedObject = null;
+      }
+    });
   }
 
   setupMovementControls() {
-    const onKeyDown = (event) => {
-      if (!this.isFirstPerson) return;
-      
-      switch (event.code) {
-        case 'ArrowUp':
-        case 'KeyW':
-          this.moveForward = true;
-          break;
-        case 'ArrowDown':
-        case 'KeyS':
-          this.moveBackward = true;
-          break;
-        case 'ArrowLeft':
-        case 'KeyA':
-          this.moveLeft = true;
-          break;
-        case 'ArrowRight':
-        case 'KeyD':
-          this.moveRight = true;
-          break;
-      }
-    };
+    // Removed keyboard controls
+  }
 
-    const onKeyUp = (event) => {
-      if (!this.isFirstPerson) return;
-      
-      switch (event.code) {
-        case 'ArrowUp':
-        case 'KeyW':
-          this.moveForward = false;
-          break;
-        case 'ArrowDown':
-        case 'KeyS':
-          this.moveBackward = false;
-          break;
-        case 'ArrowLeft':
-        case 'KeyA':
-          this.moveLeft = false;
-          break;
-        case 'ArrowRight':
-        case 'KeyD':
-          this.moveRight = false;
-          break;
-      }
-    };
+  updateFirstPersonMovement(delta) {
+    if (!this.isFirstPerson || !this.fpControls.isLocked) return;
 
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
+    if (this.isGrabbing && this.grabbedObject) {
+      // When grabbing, move toward or away from grab point based on drag
+      const moveSpeed = 2;
+      const dragAmount = this.dragDirection.length();
+      
+      if (dragAmount > 0.01) {
+        const targetPosition = this.camera.position.clone()
+          .add(this.dragDirection.multiplyScalar(moveSpeed * delta));
+        
+        // Check if new position is within bounds
+        const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
+        const margin = 0.3;
+        
+        busBox.min.add(new THREE.Vector3(margin, margin, margin));
+        busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+        if (busBox.containsPoint(targetPosition)) {
+          this.camera.position.copy(targetPosition);
+        }
+      }
+    } else {
+      // Apply velocity and damping when floating
+      this.playerVelocity.multiplyScalar(0.98); // Slight damping
+      
+      const newPosition = this.camera.position.clone()
+        .add(this.playerVelocity.clone().multiplyScalar(delta));
+      
+      // Check bounds before applying movement
+      const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
+      const margin = 0.3;
+      
+      busBox.min.add(new THREE.Vector3(margin, margin, margin));
+      busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+      if (busBox.containsPoint(newPosition)) {
+        this.camera.position.copy(newPosition);
+      } else {
+        // Bounce off walls
+        this.playerVelocity.multiplyScalar(-0.5);
+      }
+    }
   }
 
   toggleView() {
@@ -489,52 +548,6 @@ class SpaceBus {
       // In third person mode, smoothly look at the bus
       const lookAtPoint = this.bus.position.clone().add(tangent.multiplyScalar(20));
       this.cameraRig.lookAt(lookAtPoint);
-    }
-  }
-
-  updateFirstPersonMovement(delta) {
-    if (!this.isFirstPerson || !this.fpControls.isLocked) return;
-
-    // Calculate movement direction
-    this.direction.z = Number(this.moveForward) - Number(this.moveBackward);
-    this.direction.x = Number(this.moveRight) - Number(this.moveLeft);
-    this.direction.normalize();
-
-    // Calculate new position
-    const moveX = this.direction.x * this.walkingSpeed * delta;
-    const moveZ = this.direction.z * this.walkingSpeed * delta;
-
-    // Test new position
-    const newPosition = this.camera.position.clone();
-    newPosition.x += moveX;
-    newPosition.z += moveZ;
-
-    // Check if new position is within bus boundaries
-    const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
-    const margin = 0.3; // Distance to keep from walls
-    
-    // Shrink the boundary box by the margin
-    busBox.min.add(new THREE.Vector3(margin, margin, margin));
-    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
-
-    // Only update position if it's within bounds and not colliding with seats
-    let canMove = true;
-    
-    // Check seat collisions
-    const playerBox = new THREE.Box3();
-    const playerSize = new THREE.Vector3(0.4, 1.7, 0.4);
-    playerBox.setFromCenterAndSize(newPosition, playerSize);
-    
-    for (const boundary of this.boundaries) {
-      if (playerBox.intersectsBox(boundary)) {
-        canMove = false;
-        break;
-      }
-    }
-
-    if (canMove && busBox.containsPoint(newPosition)) {
-      this.camera.position.x += moveX;
-      this.camera.position.z += moveZ;
     }
   }
 
