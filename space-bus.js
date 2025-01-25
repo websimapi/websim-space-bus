@@ -37,9 +37,9 @@ class SpaceBus {
     
     // Enhanced physics parameters
     this.playerVelocity = new THREE.Vector3();
-    this.damping = 0.98; // Air resistance
-    this.pullForce = 5.0; // Force when pulling toward grab point
-    this.pushForce = 10.0; // Force when pushing off
+    this.damping = 0.95; // Slightly stronger air resistance
+    this.pullForce = 15.0; // Increased for more noticeable pull
+    this.pushForce = 25.0; // Increased for more dramatic push-offs
     this.minGrabDistance = 0.5;
     this.maxGrabDistance = 5.0;
     this.grabObjects = []; // Array to store all grabbable objects
@@ -186,7 +186,7 @@ class SpaceBus {
     for (let side of [-1, 1]) {
       for (let z = -6; z <= 6; z += 3) {
         // Seat cushion
-        const seatCushion = new THREE.Mesh(
+        const seatCushion = new THREEca.Mesh(
           new THREE.BoxGeometry(1.2, 0.3, 1.2),
           seatMaterial.clone()
         );
@@ -389,6 +389,7 @@ class SpaceBus {
     this.dragStartPosition = new THREE.Vector2();
     this.isDragging = false;
     this.dragDirection = new THREE.Vector3();
+    this.initialGrabPoint = new THREE.Vector3();
 
     document.addEventListener('mousemove', (event) => {
       this.handleMouseMove(event);
@@ -413,19 +414,22 @@ class SpaceBus {
         const dy = event.clientY - this.dragStartPosition.y;
         const dragDistance = Math.sqrt(dx * dx + dy * dy);
         
-        if (dragDistance > 10) {
+        if (dragDistance > 5) { // Reduced threshold for easier dragging
           this.isDragging = true;
+          // Store initial grab point in world space
+          this.initialGrabPoint = this.grabPoint.clone();
         }
       }
 
       if (this.isDragging) {
-        // Calculate drag direction in world space
-        const movementX = event.movementX / window.innerWidth;
-        const movementY = event.movementY / window.innerHeight;
+        // Calculate drag vector in screen space
+        const currentMousePos = new THREE.Vector2(event.clientX, event.clientY);
+        const dragVector = currentMousePos.clone().sub(this.dragStartPosition);
         
+        // Convert to world space direction
         this.dragDirection.set(
-          movementX * this.pushForce,
-          -movementY * this.pushForce,
+          dragVector.x / window.innerWidth * this.pushForce,
+          -dragVector.y / window.innerHeight * this.pushForce,
           0
         ).applyQuaternion(this.camera.quaternion);
       }
@@ -486,12 +490,13 @@ class SpaceBus {
     if (!this.isFirstPerson) return;
 
     if (this.isGrabbing && this.grabbedObject && !this.isDragging) {
-      // Pull towards grab point when holding
+      // Enhanced pull towards grab point when holding
       const toGrab = this.grabPoint.clone().sub(this.camera.position);
       const distance = toGrab.length();
       
       if (distance > this.minGrabDistance) {
-        toGrab.normalize().multiplyScalar(this.pullForce * delta);
+        const pullStrength = Math.min(1.0, distance / this.maxGrabDistance);
+        toGrab.normalize().multiplyScalar(this.pullForce * pullStrength * delta);
         this.playerVelocity.add(toGrab);
       }
     }
@@ -499,11 +504,16 @@ class SpaceBus {
     // Apply velocity with damping
     this.playerVelocity.multiplyScalar(this.damping);
     
+    // Apply minimum velocity threshold to prevent micro-movements
+    if (this.playerVelocity.lengthSq() < 0.0001) {
+      this.playerVelocity.set(0, 0, 0);
+    }
+    
     // Calculate new position
     const newPosition = this.camera.position.clone()
       .add(this.playerVelocity.clone().multiplyScalar(delta));
 
-    // Check bounds
+    // Check bounds with improved collision response
     const busBox = new THREE.Box3().setFromObject(this.bus);
     const margin = 0.3;
     busBox.min.add(new THREE.Vector3(margin, margin, margin));
@@ -512,8 +522,38 @@ class SpaceBus {
     if (busBox.containsPoint(newPosition)) {
       this.camera.position.copy(newPosition);
     } else {
-      // Bounce off walls
-      this.playerVelocity.multiplyScalar(-0.5);
+      // Enhanced bounce physics
+      const normal = this.calculateCollisionNormal(newPosition, busBox);
+      this.handleCollision(normal);
+    }
+  }
+
+  calculateCollisionNormal(position, bounds) {
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const dirToCenter = position.clone().sub(center);
+    
+    // Find the axis of maximum penetration
+    const penetrations = [
+      Math.abs(dirToCenter.x) / size.x,
+      Math.abs(dirToCenter.y) / size.y,
+      Math.abs(dirToCenter.z) / size.z
+    ];
+    
+    const maxIndex = penetrations.indexOf(Math.max(...penetrations));
+    const normal = new THREE.Vector3();
+    normal.setComponent(maxIndex, Math.sign(dirToCenter.getComponent(maxIndex)));
+    
+    return normal;
+  }
+
+  handleCollision(normal) {
+    // Reflect velocity about the normal with energy loss
+    const dot = this.playerVelocity.dot(normal);
+    if (dot < 0) {
+      normal.multiplyScalar(2 * dot);
+      this.playerVelocity.sub(normal);
+      this.playerVelocity.multiplyScalar(0.5); // Energy loss on collision
     }
   }
 
