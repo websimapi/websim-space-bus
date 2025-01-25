@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import TWEEN from '@tweenjs/tween.js';
 
 class SpaceBus {
   constructor() {
@@ -530,13 +529,13 @@ class SpaceBus {
       this.controls.enabled = true;
       
       // Return to third-person view
-      new TWEEN.Tween(this.camera.position)
+      new window.TWEEN.Tween(this.camera.position)
         .to({
           x: this.thirdPersonPosition.x,
           y: this.thirdPersonPosition.y,
           z: this.thirdPersonPosition.z
         }, 1000)
-        .easing(TWEEN.Easing.Cubic.InOut)
+        .easing(window.TWEEN.Easing.Cubic.InOut)
         .start();
     }
   }
@@ -614,7 +613,7 @@ class SpaceBus {
     
     // Update controls and render
     this.controls.update();
-    TWEEN.update();
+    window.TWEEN.update();
     this.renderer.render(this.scene, this.camera);
   }
 }
