@@ -1,15 +1,18 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import TWEEN from '@tweenjs/tween.js';
 
 class SpaceBus {
   constructor() {
     this.room = new WebsimSocket();
+    this.isFirstPerson = false;
     this.setupScene();
     this.setupLighting();
     this.createStarfield();
     this.createDetailedBus();
     this.setupPassengerList();
+    this.setupViewToggle();
     
     // Initialize movement parameters
     this.busPath = new THREE.CatmullRomCurve3([
@@ -25,7 +28,12 @@ class SpaceBus {
     // Create a chase camera rig
     this.cameraRig = new THREE.Object3D();
     this.scene.add(this.cameraRig);
-    this.camera.position.set(0, 5, 20);
+    
+    // Set up both camera positions
+    this.thirdPersonPosition = new THREE.Vector3(0, 8, 30);
+    this.firstPersonPosition = new THREE.Vector3(0, 0.5, 6); // Inside the bus, near the front
+    
+    this.camera.position.copy(this.thirdPersonPosition);
     this.cameraRig.add(this.camera);
     
     this.animate();
@@ -42,8 +50,6 @@ class SpaceBus {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(this.renderer.domElement);
 
-    this.camera.position.set(0, 5, 20);
-    
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
@@ -234,6 +240,35 @@ class SpaceBus {
       this.bus.add(roofDetail);
     }
 
+    // Add transparent roof
+    const roofGeometry = new THREE.BoxGeometry(7.8, 0.2, 15.8);
+    const roofMaterial = new THREE.MeshPhongMaterial({
+      color: 0x88ccff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide
+    });
+    const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+    roof.position.y = 1.9;
+    this.bus.add(roof);
+
+    // Add roof support beams
+    const beamGeometry = new THREE.BoxGeometry(0.2, 4, 0.2);
+    const beamMaterial = new THREE.MeshPhongMaterial({ color: 0x666666 });
+    
+    // Add beams at corners and middle
+    const beamPositions = [
+      [-3.8, 0, 7.8], [3.8, 0, 7.8],   // Front
+      [-3.8, 0, -7.8], [3.8, 0, -7.8], // Back
+      [-3.8, 0, 0], [3.8, 0, 0]        // Middle
+    ];
+    
+    beamPositions.forEach(pos => {
+      const beam = new THREE.Mesh(beamGeometry, beamMaterial);
+      beam.position.set(pos[0], pos[1], pos[2]);
+      this.bus.add(beam);
+    });
+
     this.scene.add(this.bus);
   }
 
@@ -251,6 +286,44 @@ class SpaceBus {
       `;
       this.passengerListEl.appendChild(li);
     });
+  }
+
+  setupViewToggle() {
+    const button = document.createElement('button');
+    button.id = 'viewToggle';
+    button.textContent = 'Toggle View (Third/First Person)';
+    button.style.position = 'fixed';
+    button.style.bottom = '20px';
+    button.style.left = '50%';
+    button.style.transform = 'translateX(-50%)';
+    button.style.padding = '10px 20px';
+    button.style.background = '#88ccff';
+    button.style.border = 'none';
+    button.style.borderRadius = '5px';
+    button.style.cursor = 'pointer';
+    button.style.zIndex = '1000';
+    
+    button.addEventListener('click', () => this.toggleView());
+    document.body.appendChild(button);
+  }
+
+  toggleView() {
+    this.isFirstPerson = !this.isFirstPerson;
+    
+    // Disable orbit controls in first person mode
+    this.controls.enabled = !this.isFirstPerson;
+    
+    // Smoothly transition the camera
+    const targetPosition = this.isFirstPerson ? this.firstPersonPosition : this.thirdPersonPosition;
+    
+    new TWEEN.Tween(this.camera.position)
+      .to({
+        x: targetPosition.x,
+        y: targetPosition.y,
+        z: targetPosition.z
+      }, 1000)
+      .easing(TWEEN.Easing.Cubic.InOut)
+      .start();
   }
 
   updateBusPosition() {
@@ -289,9 +362,18 @@ class SpaceBus {
     // Add some gentle rolling motion
     this.bus.rotation.z = Math.sin(Date.now() * 0.001) * 0.1;
 
-    // Update camera rig position to follow the bus
-    this.cameraRig.position.lerp(currentPos, 0.1);
-    this.cameraRig.lookAt(lookAtPoint);
+    // Update camera rig position to follow the bus more smoothly
+    const cameraTarget = this.isFirstPerson ? this.bus.position : this.bus.position.clone().add(new THREE.Vector3(0, 5, 20));
+    this.cameraRig.position.lerp(cameraTarget, 0.1);
+    
+    // In first person mode, match bus rotation exactly
+    if (this.isFirstPerson) {
+      this.cameraRig.quaternion.copy(this.bus.quaternion);
+    } else {
+      // In third person mode, smoothly look at the bus
+      const lookAtPoint = this.bus.position.clone().add(tangent.multiplyScalar(20));
+      this.cameraRig.lookAt(lookAtPoint);
+    }
   }
 
   animate() {
