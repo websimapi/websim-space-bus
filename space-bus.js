@@ -37,12 +37,21 @@ class SpaceBus {
     
     // Enhanced physics parameters
     this.playerVelocity = new THREE.Vector3();
-    this.damping = 0.98; // Less damping for smoother movement
-    this.pullForce = 25.0; // Stronger pull force
-    this.pushForce = 35.0; // Stronger push force
+    this.playerMass = 70; // kg
+    this.damping = 0.98; // Air resistance
+    this.pullForce = 500.0; // N
+    this.pushForce = 700.0; // N
     this.minGrabDistance = 0.5;
-    this.maxGrabDistance = 8.0; // Increased grab range
+    this.maxGrabDistance = 8.0;
     this.grabObjects = []; // Array to store all grabbable objects
+    this.physicsDeltaTime = 1/60; // Fixed timestep
+    this.accumulator = 0;
+
+    // Add physics properties to floating objects
+    this.floatingObjectMass = 1; // kg
+    this.collisionElasticity = 0.7; // Bounciness
+    this.frictionCoefficient = 0.3;
+    this.angularDamping = 0.95;
 
     this.createDetailedBus();
     this.setupGrabSystem();
@@ -537,7 +546,115 @@ class SpaceBus {
     }
   }
 
-  updateFloatingObjects(delta) {
+  updateFirstPersonMovement(deltaTime) {
+    if (!this.isFirstPerson) return;
+    
+    // Accumulate time for fixed timestep physics
+    this.accumulator += deltaTime;
+    
+    // Run physics at fixed timestep
+    while (this.accumulator >= this.physicsDeltaTime) {
+      this.physicsTick(this.physicsDeltaTime);
+      this.accumulator -= this.physicsDeltaTime;
+    }
+  }
+
+  physicsTick(dt) {
+    if (this.isGrabbing && this.grabbedObject) {
+      if (!this.isDragging) {
+        // Pull towards grab point with spring-like behavior
+        const toGrab = this.grabPoint.clone().sub(this.camera.position);
+        const distance = toGrab.length();
+        
+        if (distance > this.minGrabDistance) {
+          // Calculate spring force (F = -kx)
+          const springConstant = 100;
+          const springForce = toGrab.normalize().multiplyScalar(
+            springConstant * (distance - this.minGrabDistance)
+          );
+          
+          // F = ma -> a = F/m
+          const acceleration = springForce.divideScalar(this.playerMass);
+          this.playerVelocity.add(acceleration.multiplyScalar(dt));
+        }
+      } else {
+        // Apply drag force for push-off movement
+        if (this.dragDirection.lengthSq() > 0.001) {
+          const dragForce = this.dragDirection.clone().multiplyScalar(this.pushForce);
+          const acceleration = dragForce.divideScalar(this.playerMass);
+          this.playerVelocity.add(acceleration.multiplyScalar(dt));
+        }
+      }
+    }
+
+    // Apply velocity verlet integration
+    const halfDt = dt * 0.5;
+    
+    // Apply air resistance (drag force proportional to velocity squared)
+    const dragCoefficient = 0.1;
+    const velocityMagnitude = this.playerVelocity.length();
+    const dragMagnitude = dragCoefficient * velocityMagnitude * velocityMagnitude;
+    const dragForce = this.playerVelocity.clone()
+      .normalize()
+      .multiplyScalar(-dragMagnitude);
+    
+    // F = ma -> a = F/m
+    const acceleration = dragForce.divideScalar(this.playerMass);
+    
+    // Update position and velocity
+    const newPosition = this.camera.position.clone()
+      .add(this.playerVelocity.clone().multiplyScalar(dt))
+      .add(acceleration.clone().multiplyScalar(0.5 * dt * dt));
+
+    // Collision detection and response with bus bounds
+    const busBox = new THREE.Box3().setFromObject(this.bus);
+    const margin = 0.3;
+    busBox.min.add(new THREE.Vector3(margin, margin, margin));
+    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
+
+    if (!busBox.containsPoint(newPosition)) {
+      // Calculate penetration depth and normal
+      const normal = this.calculateCollisionNormal(newPosition, busBox);
+      const penetration = this.calculatePenetrationDepth(newPosition, busBox);
+      
+      // Resolve collision
+      newPosition.add(normal.multiplyScalar(penetration));
+      
+      // Update velocity with impulse-based collision response
+      const relativeVelocity = this.playerVelocity.clone();
+      const normalVelocity = normal.dot(relativeVelocity);
+      
+      if (normalVelocity < 0) {
+        const j = -(1 + this.collisionElasticity) * normalVelocity;
+        const impulse = normal.multiplyScalar(j);
+        this.playerVelocity.add(impulse);
+        
+        // Apply friction
+        const tangent = this.playerVelocity.clone()
+          .sub(normal.multiplyScalar(normal.dot(this.playerVelocity)))
+          .normalize();
+        
+        const frictionImpulse = tangent.multiplyScalar(-j * this.frictionCoefficient);
+        this.playerVelocity.add(frictionImpulse);
+      }
+    }
+
+    this.camera.position.copy(newPosition);
+    this.playerVelocity.add(acceleration.multiplyScalar(dt));
+  }
+
+  updateFloatingObjects(deltaTime) {
+    // Accumulate time for fixed timestep physics
+    this.accumulator += deltaTime;
+    
+    // Run physics at fixed timestep
+    while (this.accumulator >= this.physicsDeltaTime) {
+      this.updateFloatingObjectsPhysics(this.physicsDeltaTime);
+      this.accumulator -= this.physicsDeltaTime;
+    }
+  }
+
+  updateFloatingObjectsPhysics(dt) {
     const busBox = new THREE.Box3().setFromObject(this.bus);
     const margin = 0.3;
     busBox.min.add(new THREE.Vector3(margin, margin, margin));
@@ -549,104 +666,112 @@ class SpaceBus {
       .map(obj => new THREE.Box3().setFromObject(obj));
 
     for (const object of this.floatingObjects) {
-      // Apply velocity
-      object.position.add(object.velocity.clone().multiplyScalar(delta));
+      // Apply velocity verlet integration
+      const halfDt = dt * 0.5;
       
-      // Apply rotation
-      object.rotation.x += object.angularVelocity.x;
-      object.rotation.y += object.angularVelocity.y;
-      object.rotation.z += object.angularVelocity.z;
+      // Apply air resistance
+      const dragCoefficient = 0.1;
+      const velocityMagnitude = object.velocity.length();
+      const dragMagnitude = dragCoefficient * velocityMagnitude * velocityMagnitude;
+      const dragForce = object.velocity.clone()
+        .normalize()
+        .multiplyScalar(-dragMagnitude);
+      
+      const acceleration = dragForce.divideScalar(this.floatingObjectMass);
+      
+      // Update position
+      const newPosition = object.position.clone()
+        .add(object.velocity.clone().multiplyScalar(dt))
+        .add(acceleration.clone().multiplyScalar(0.5 * dt * dt));
 
-      // Check bus bounds
+      // Update rotation with angular velocity
+      const rotationDelta = object.angularVelocity.clone().multiplyScalar(dt);
+      object.rotation.x += rotationDelta.x;
+      object.rotation.y += rotationDelta.y;
+      object.rotation.z += rotationDelta.z;
+
+      // Apply angular damping
+      object.angularVelocity.multiplyScalar(this.angularDamping);
+
+      // Check collisions
       const objectBox = new THREE.Box3().setFromObject(object);
+      let hasCollision = false;
+
+      // Bus bounds collision
       if (!busBox.containsBox(objectBox)) {
-        // Bounce off bus walls
         const normal = this.calculateCollisionNormal(object.position, busBox);
-        this.bounceObject(object, normal, 0.8);
+        this.resolveCollision(object, normal, this.collisionElasticity);
+        hasCollision = true;
       }
 
-      // Check collisions with fixed objects
+      // Fixed objects collision
       for (const box of collisionBoxes) {
         if (objectBox.intersectsBox(box)) {
           const normal = this.calculateCollisionNormal(object.position, box);
-          this.bounceObject(object, normal, 0.8);
+          this.resolveCollision(object, normal, this.collisionElasticity);
+          hasCollision = true;
+          break;
         }
       }
 
-      // Check collisions with other floating objects
+      // Object-object collision
       for (const other of this.floatingObjects) {
         if (other === object) continue;
         
         const otherBox = new THREE.Box3().setFromObject(other);
         if (objectBox.intersectsBox(otherBox)) {
-          // Calculate collision response
-          const normal = object.position.clone().sub(other.position).normalize();
-          this.bounceObject(object, normal, 0.8);
-          this.bounceObject(other, normal.multiplyScalar(-1), 0.8);
+          const normal = object.position.clone()
+            .sub(other.position)
+            .normalize();
+          
+          // Two-way collision response
+          this.resolveCollision(object, normal, this.collisionElasticity);
+          this.resolveCollision(other, normal.multiplyScalar(-1), this.collisionElasticity);
+          
+          // Add some random spin on collision
+          const randomTorque = new THREE.Vector3(
+            (Math.random() - 0.5) * 0.1,
+            (Math.random() - 0.5) * 0.1,
+            (Math.random() - 0.5) * 0.1
+          );
+          object.angularVelocity.add(randomTorque);
+          other.angularVelocity.sub(randomTorque);
+          
+          hasCollision = true;
+          break;
         }
       }
 
-      // Apply damping
-      object.velocity.multiplyScalar(0.99);
-      object.angularVelocity.multiplyScalar(0.99);
-    }
-  }
-
-  bounceObject(object, normal, restitution) {
-    const dot = object.velocity.dot(normal);
-    if (dot < 0) {
-      normal.multiplyScalar(2 * dot);
-      object.velocity.sub(normal);
-      object.velocity.multiplyScalar(restitution);
-    }
-  }
-
-  updateFirstPersonMovement(delta) {
-    if (!this.isFirstPerson) return;
-
-    if (this.isGrabbing && this.grabbedObject) {
-      if (!this.isDragging) {
-        // Pull towards grab point when holding
-        const toGrab = this.grabPoint.clone().sub(this.camera.position);
-        const distance = toGrab.length();
-        
-        if (distance > this.minGrabDistance) {
-          const pullStrength = Math.min(1.0, distance / this.maxGrabDistance);
-          toGrab.normalize().multiplyScalar(this.pullForce * pullStrength * delta);
-          this.playerVelocity.add(toGrab);
-        }
-      } else {
-        // Apply drag force for push-off movement
-        if (this.dragDirection.lengthSq() > 0.001) {
-          this.playerVelocity.add(this.dragDirection.clone().multiplyScalar(delta));
-        }
+      if (!hasCollision) {
+        object.position.copy(newPosition);
+        object.velocity.add(acceleration.multiplyScalar(dt));
       }
     }
+  }
 
-    // Apply velocity with improved damping
-    this.playerVelocity.multiplyScalar(this.damping);
+  resolveCollision(object, normal, restitution) {
+    const relativeVelocity = object.velocity;
+    const normalVelocity = normal.dot(relativeVelocity);
     
-    // Apply minimum velocity threshold
-    if (this.playerVelocity.lengthSq() < 0.0001) {
-      this.playerVelocity.set(0, 0, 0);
-    }
-    
-    // Calculate new position
-    const newPosition = this.camera.position.clone()
-      .add(this.playerVelocity.clone().multiplyScalar(delta));
-
-    // Collision checking with bus bounds
-    const busBox = new THREE.Box3().setFromObject(this.bus);
-    const margin = 0.3;
-    busBox.min.add(new THREE.Vector3(margin, margin, margin));
-    busBox.max.sub(new THREE.Vector3(margin, margin, margin));
-
-    if (busBox.containsPoint(newPosition)) {
-      this.camera.position.copy(newPosition);
-    } else {
-      // Bounce physics
-      const normal = this.calculateCollisionNormal(newPosition, busBox);
-      this.playerVelocity.reflect(normal).multiplyScalar(0.5);
+    if (normalVelocity < 0) {
+      const j = -(1 + restitution) * normalVelocity;
+      const impulse = normal.multiplyScalar(j);
+      object.velocity.add(impulse);
+      
+      // Apply friction
+      const tangent = object.velocity.clone()
+        .sub(normal.multiplyScalar(normal.dot(object.velocity)))
+        .normalize();
+      
+      const frictionImpulse = tangent.multiplyScalar(-j * this.frictionCoefficient);
+      object.velocity.add(frictionImpulse);
+      
+      // Add some random spin on collision
+      object.angularVelocity.add(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.1,
+        (Math.random() - 0.5) * 0.1,
+        (Math.random() - 0.5) * 0.1
+      ));
     }
   }
 
@@ -669,27 +794,18 @@ class SpaceBus {
     return normal;
   }
 
-  toggleView() {
-    this.isFirstPerson = !this.isFirstPerson;
+  calculatePenetrationDepth(position, bounds) {
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const dirToCenter = position.clone().sub(center);
     
-    if (this.isFirstPerson) {
-      this.controls.enabled = false;
-      // Position the camera at head height inside the bus
-      this.camera.position.set(0, 0.5, 6);
-      this.camera.rotation.set(0, Math.PI, 0);
-    } else {
-      this.controls.enabled = true;
-      
-      // Return to third-person view
-      new window.TWEEN.Tween(this.camera.position)
-        .to({
-          x: this.thirdPersonPosition.x,
-          y: this.thirdPersonPosition.y,
-          z: this.thirdPersonPosition.z
-        }, 1000)
-        .easing(window.TWEEN.Easing.Cubic.InOut)
-        .start();
-    }
+    const penetrations = [
+      Math.abs(size.x/2 - Math.abs(dirToCenter.x)),
+      Math.abs(size.y/2 - Math.abs(dirToCenter.y)),
+      Math.abs(size.z/2 - Math.abs(dirToCenter.z))
+    ];
+    
+    return Math.max(...penetrations);
   }
 
   updateBusPosition() {
@@ -739,6 +855,29 @@ class SpaceBus {
       // In third person mode, smoothly look at the bus
       const lookAtPoint = this.bus.position.clone().add(tangent.multiplyScalar(20));
       this.cameraRig.lookAt(lookAtPoint);
+    }
+  }
+
+  toggleView() {
+    this.isFirstPerson = !this.isFirstPerson;
+    
+    if (this.isFirstPerson) {
+      this.controls.enabled = false;
+      // Position the camera at head height inside the bus
+      this.camera.position.set(0, 0.5, 6);
+      this.camera.rotation.set(0, Math.PI, 0);
+    } else {
+      this.controls.enabled = true;
+      
+      // Return to third-person view
+      new window.TWEEN.Tween(this.camera.position)
+        .to({
+          x: this.thirdPersonPosition.x,
+          y: this.thirdPersonPosition.y,
+          z: this.thirdPersonPosition.z
+        }, 1000)
+        .easing(window.TWEEN.Easing.Cubic.InOut)
+        .start();
     }
   }
 
