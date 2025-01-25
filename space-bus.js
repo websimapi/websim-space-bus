@@ -10,7 +10,6 @@ class SpaceBus {
     this.setupScene();
     this.setupLighting();
     this.createStarfield();
-    this.createDetailedBus();
     this.setupPassengerList();
     this.setupViewToggle();
     
@@ -36,23 +35,17 @@ class SpaceBus {
     this.camera.position.copy(this.thirdPersonPosition);
     this.cameraRig.add(this.camera);
     
-    // Add first-person movement variables
-    this.moveForward = false;
-    this.moveBackward = false;
-    this.moveLeft = false;
-    this.moveRight = false;
-    this.canJump = false;
-    this.velocity = new THREE.Vector3();
-    this.direction = new THREE.Vector3();
-    this.fpControls = null;
-    this.walkingSpeed = 5.0;
-    this.controlsInfo = document.getElementById('controls-info');
-    
-    // Create collision boundaries
-    this.createCollisionBoundaries();
-    
-    this.setupFirstPersonControls();
-    this.setupMovementControls();
+    // Enhanced physics parameters
+    this.playerVelocity = new THREE.Vector3();
+    this.damping = 0.98; // Air resistance
+    this.pullForce = 5.0; // Force when pulling toward grab point
+    this.pushForce = 10.0; // Force when pushing off
+    this.minGrabDistance = 0.5;
+    this.maxGrabDistance = 5.0;
+    this.grabObjects = []; // Array to store all grabbable objects
+
+    this.createDetailedBus();
+    this.setupGrabSystem();
     
     this.animate();
     
@@ -150,24 +143,145 @@ class SpaceBus {
   createDetailedBus() {
     this.bus = new THREE.Group();
     
-    // Main bus body - now larger
-    const bodyGeometry = new THREE.BoxGeometry(8, 4, 16);
-    const busMaterial = new THREE.MeshPhongMaterial({ 
-      color: 0x3366ff,
-      side: THREE.DoubleSide // Render both sides of faces
-    });
-    const busBody = new THREE.Mesh(bodyGeometry, busMaterial);
-    
-    // Make the body hollow by creating an inner box
-    const innerGeometry = new THREE.BoxGeometry(7.5, 3.5, 15.5);
-    const innerMaterial = new THREE.MeshPhongMaterial({
-      color: 0x222244,
-      side: THREE.BackSide
-    });
-    const innerBody = new THREE.Mesh(innerGeometry, innerMaterial);
-    this.bus.add(innerBody);
+    // Create individual wall panels that can be grabbed
+    this.createWallPanels();
+    this.createDetailedSeats();
+    this.createGrabbableHandrails();
+    this.createWindowPanels();
+    this.createFloorPanels();
+    this.createCeilingPanels();
+    this.createDetailedDashboard();
 
-    // Floor
+    this.scene.add(this.bus);
+  }
+
+  createWallPanels() {
+    const panelSize = new THREE.Vector2(2, 2); // Width and height of each panel
+    const panelGeometry = new THREE.BoxGeometry(0.1, panelSize.y, panelSize.x);
+    const panelMaterial = new THREE.MeshPhongMaterial({
+      color: 0x3366ff,
+      side: THREE.DoubleSide
+    });
+
+    // Create wall panels for each side
+    for (let side of [-1, 1]) { // Left and right
+      for (let z = -7; z <= 7; z += panelSize.x) {
+        for (let y = -1; y <= 1; y += panelSize.y) {
+          const panel = new THREE.Mesh(panelGeometry, panelMaterial.clone());
+          panel.position.set(side * 4, y, z);
+          panel.userData.isGrabbable = true;
+          panel.userData.type = 'wall';
+          this.bus.add(panel);
+          this.grabObjects.push(panel);
+        }
+      }
+    }
+  }
+
+  createDetailedSeats() {
+    const seatGeometry = new THREE.BoxGeometry(1, 1.5, 1);
+    const seatMaterial = new THREE.MeshPhongMaterial({ color: 0x990000 });
+    
+    // Create individual grabbable components for each seat
+    for (let side of [-1, 1]) {
+      for (let z = -6; z <= 6; z += 3) {
+        // Seat cushion
+        const seatCushion = new THREE.Mesh(
+          new THREE.BoxGeometry(1.2, 0.3, 1.2),
+          seatMaterial.clone()
+        );
+        seatCushion.position.set(side * 3, -1.3, z);
+        seatCushion.userData.isGrabbable = true;
+        seatCushion.userData.type = 'seat';
+        this.bus.add(seatCushion);
+        this.grabObjects.push(seatCushion);
+
+        // Seat back
+        const seatBack = new THREE.Mesh(
+          new THREE.BoxGeometry(1.2, 1.5, 0.3),
+          seatMaterial.clone()
+        );
+        seatBack.position.set(side * 3, -0.5, z - 0.6);
+        seatBack.userData.isGrabbable = true;
+        seatBack.userData.type = 'seatback';
+        this.bus.add(seatBack);
+        this.grabObjects.push(seatBack);
+
+        // Armrests
+        for (let armSide of [-1, 1]) {
+          const armrest = new THREE.Mesh(
+            new THREE.BoxGeometry(0.2, 0.2, 1),
+            seatMaterial.clone()
+          );
+          armrest.position.set(
+            side * 3 + (armSide * 0.5),
+            -0.8,
+            z
+          );
+          armrest.userData.isGrabbable = true;
+          armrest.userData.type = 'armrest';
+          this.bus.add(armrest);
+          this.grabObjects.push(armrest);
+        }
+      }
+    }
+  }
+
+  createGrabbableHandrails() {
+    const railGeometry = new THREE.CylinderGeometry(0.05, 0.05, 1, 8);
+    const railMaterial = new THREE.MeshPhongMaterial({ color: 0xcccccc });
+
+    // Ceiling rails
+    for (let side of [-1, 1]) {
+      for (let z = -7; z <= 7; z += 1) {
+        const rail = new THREE.Mesh(railGeometry, railMaterial.clone());
+        rail.rotation.x = Math.PI / 2;
+        rail.position.set(side * 2, 1.8, z);
+        rail.userData.isGrabbable = true;
+        rail.userData.type = 'rail';
+        this.bus.add(rail);
+        this.grabObjects.push(rail);
+      }
+    }
+
+    // Vertical support poles
+    for (let z = -7; z <= 7; z += 3.5) {
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 3.6, 8),
+        railMaterial.clone()
+      );
+      pole.position.set(2, 0, z);
+      pole.userData.isGrabbable = true;
+      pole.userData.type = 'pole';
+      this.bus.add(pole);
+      this.grabObjects.push(pole);
+    }
+  }
+
+  createWindowPanels() {
+    const windowMaterial = new THREE.MeshPhongMaterial({
+      color: 0x88ccff,
+      transparent: true,
+      opacity: 0.3
+    });
+    
+    // Window panels for each side
+    for (let side of [-1, 1]) {
+      for (let z = -6; z <= 6; z += 2) {
+        const window = new THREE.Mesh(
+          new THREE.BoxGeometry(0.1, 2, 1.5),
+          windowMaterial.clone()
+        );
+        window.position.set(side * 4, 0, z);
+        window.userData.isGrabbable = true;
+        window.userData.type = 'window';
+        this.bus.add(window);
+        this.grabObjects.push(window);
+      }
+    }
+  }
+
+  createFloorPanels() {
     const floorGeometry = new THREE.BoxGeometry(7.5, 0.2, 15.5);
     const floorMaterial = new THREE.MeshPhongMaterial({
       color: 0x333333,
@@ -175,90 +289,13 @@ class SpaceBus {
     });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
     floor.position.y = -1.9;
+    floor.userData.isGrabbable = true;
+    floor.userData.type = 'floor';
     this.bus.add(floor);
+    this.grabObjects.push(floor);
+  }
 
-    // Add seats (3 rows on each side)
-    const seatGeometry = new THREE.BoxGeometry(1, 1.5, 1);
-    const seatMaterial = new THREE.MeshPhongMaterial({ color: 0x990000 });
-    
-    for(let side of [-1, 1]) { // Left and right sides
-      for(let z = -6; z <= 6; z += 3) { // Front to back
-        const seat = new THREE.Mesh(seatGeometry, seatMaterial);
-        seat.position.set(side * 3, -1, z);
-        this.bus.add(seat);
-        
-        // Add seat back
-        const seatBack = new THREE.Mesh(
-          new THREE.BoxGeometry(1, 2, 0.3),
-          seatMaterial
-        );
-        seatBack.position.set(side * 3, -0.5, z - 0.5);
-        this.bus.add(seatBack);
-      }
-    }
-
-    // Windows
-    const windowMaterial = new THREE.MeshPhongMaterial({
-      color: 0x88ccff,
-      transparent: true,
-      opacity: 0.3
-    });
-    
-    // Side windows
-    for(let side of [-1, 1]) {
-      for(let z = -6; z <= 6; z += 2) {
-        const window = new THREE.Mesh(
-          new THREE.BoxGeometry(0.1, 2, 1.5),
-          windowMaterial
-        );
-        window.position.set(side * 4, 0, z);
-        this.bus.add(window);
-      }
-    }
-
-    // Windshield
-    const windshield = new THREE.Mesh(
-      new THREE.BoxGeometry(7, 2.5, 0.1),
-      windowMaterial
-    );
-    windshield.position.set(0, 0.5, 7.95);
-    this.bus.add(windshield);
-
-    // Control panel
-    const controlPanelGeometry = new THREE.BoxGeometry(4, 1, 0.5);
-    const controlPanelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 });
-    const controlPanel = new THREE.Mesh(controlPanelGeometry, controlPanelMaterial);
-    controlPanel.position.set(0, -0.5, 7);
-    this.bus.add(controlPanel);
-
-    // Add some details to the control panel
-    const buttonGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.1, 16);
-    const buttonMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 });
-    for(let x = -1.5; x <= 1.5; x += 0.5) {
-      const button = new THREE.Mesh(buttonGeometry, buttonMaterial);
-      button.rotation.x = Math.PI / 2;
-      button.position.set(x, -0.2, 7.3);
-      this.bus.add(button);
-    }
-
-    // Add screen to control panel
-    const screenGeometry = new THREE.BoxGeometry(2, 0.8, 0.1);
-    const screenMaterial = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
-    const screen = new THREE.Mesh(screenGeometry, screenMaterial);
-    screen.position.set(0, 0, 7.3);
-    this.bus.add(screen);
-
-    // Add roof details
-    const roofDetailGeometry = new THREE.CylinderGeometry(0.2, 0.2, 14, 8);
-    const roofDetailMaterial = new THREE.MeshPhongMaterial({ color: 0x666666 });
-    for(let x = -2; x <= 2; x += 2) {
-      const roofDetail = new THREE.Mesh(roofDetailGeometry, roofDetailMaterial);
-      roofDetail.rotation.z = Math.PI / 2;
-      roofDetail.position.set(x, 1.8, 0);
-      this.bus.add(roofDetail);
-    }
-
-    // Add transparent roof
+  createCeilingPanels() {
     const roofGeometry = new THREE.BoxGeometry(7.8, 0.2, 15.8);
     const roofMaterial = new THREE.MeshPhongMaterial({
       color: 0x88ccff,
@@ -268,26 +305,44 @@ class SpaceBus {
     });
     const roof = new THREE.Mesh(roofGeometry, roofMaterial);
     roof.position.y = 1.9;
+    roof.userData.isGrabbable = true;
+    roof.userData.type = 'ceiling';
     this.bus.add(roof);
+    this.grabObjects.push(roof);
+  }
 
-    // Add roof support beams
-    const beamGeometry = new THREE.BoxGeometry(0.2, 4, 0.2);
-    const beamMaterial = new THREE.MeshPhongMaterial({ color: 0x666666 });
-    
-    // Add beams at corners and middle
-    const beamPositions = [
-      [-3.8, 0, 7.8], [3.8, 0, 7.8],   // Front
-      [-3.8, 0, -7.8], [3.8, 0, -7.8], // Back
-      [-3.8, 0, 0], [3.8, 0, 0]        // Middle
-    ];
-    
-    beamPositions.forEach(pos => {
-      const beam = new THREE.Mesh(beamGeometry, beamMaterial);
-      beam.position.set(pos[0], pos[1], pos[2]);
-      this.bus.add(beam);
-    });
+  createDetailedDashboard() {
+    const controlPanelGeometry = new THREE.BoxGeometry(4, 1, 0.5);
+    const controlPanelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 });
+    const controlPanel = new THREE.Mesh(controlPanelGeometry, controlPanelMaterial);
+    controlPanel.position.set(0, -0.5, 7);
+    controlPanel.userData.isGrabbable = true;
+    controlPanel.userData.type = 'dashboard';
+    this.bus.add(controlPanel);
+    this.grabObjects.push(controlPanel);
 
-    this.scene.add(this.bus);
+    // Add some details to the control panel
+    const buttonGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.1, 16);
+    const buttonMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+    for(let x = -1.5; x <= 1.5; x += 0.5) {
+      const button = new THREE.Mesh(buttonGeometry, buttonMaterial);
+      button.rotation.x = Math.PI / 2;
+      button.position.set(x, -0.2, 7.3);
+      button.userData.isGrabbable = true;
+      button.userData.type = 'button';
+      this.bus.add(button);
+      this.grabObjects.push(button);
+    }
+
+    // Add screen to control panel
+    const screenGeometry = new THREE.BoxGeometry(2, 0.8, 0.1);
+    const screenMaterial = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+    const screen = new THREE.Mesh(screenGeometry, screenMaterial);
+    screen.position.set(0, 0, 7.3);
+    screen.userData.isGrabbable = true;
+    screen.userData.type = 'screen';
+    this.bus.add(screen);
+    this.grabObjects.push(screen);
   }
 
   setupPassengerList() {
@@ -325,212 +380,141 @@ class SpaceBus {
     document.body.appendChild(button);
   }
 
-  createCollisionBoundaries() {
-    // Create invisible boundaries for collision detection
-    this.boundaries = [];
-    
-    // Bus interior boundaries (slightly smaller than visible walls)
-    const boundaryGeometry = new THREE.BoxGeometry(7.3, 3.3, 15.3);
-    const boundaryMaterial = new THREE.MeshBasicMaterial({
-      visible: false
+  setupGrabSystem() {
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.isGrabbing = false;
+    this.grabbedObject = null;
+    this.grabPoint = new THREE.Vector3();
+    this.dragStartPosition = new THREE.Vector2();
+    this.isDragging = false;
+    this.dragDirection = new THREE.Vector3();
+
+    document.addEventListener('mousemove', (event) => {
+      this.handleMouseMove(event);
     });
-    this.mainBoundary = new THREE.Mesh(boundaryGeometry, boundaryMaterial);
-    this.bus.add(this.mainBoundary);
-    
-    // Add seat collision boxes
-    for(let side of [-1, 1]) {
-      for(let z = -6; z <= 6; z += 3) {
-        const seatBoundary = new THREE.Box3();
-        const seatSize = new THREE.Vector3(1.2, 1.7, 1.2);
-        const seatPos = new THREE.Vector3(side * 3, -1, z);
-        seatBoundary.setFromCenterAndSize(seatPos, seatSize);
-        this.boundaries.push(seatBoundary);
+
+    document.addEventListener('mousedown', (event) => {
+      this.handleMouseDown(event);
+    });
+
+    document.addEventListener('mouseup', () => {
+      this.handleMouseUp();
+    });
+  }
+
+  handleMouseMove(event) {
+    this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    if (this.isGrabbing && this.grabbedObject) {
+      if (!this.isDragging) {
+        const dx = event.clientX - this.dragStartPosition.x;
+        const dy = event.clientY - this.dragStartPosition.y;
+        const dragDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dragDistance > 10) {
+          this.isDragging = true;
+        }
+      }
+
+      if (this.isDragging) {
+        // Calculate drag direction in world space
+        const movementX = event.movementX / window.innerWidth;
+        const movementY = event.movementY / window.innerHeight;
+        
+        this.dragDirection.set(
+          movementX * this.pushForce,
+          -movementY * this.pushForce,
+          0
+        ).applyQuaternion(this.camera.quaternion);
+      }
+    }
+
+    // Update cursor appearance
+    if (this.isFirstPerson) {
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      const intersects = this.raycaster.intersectObjects(this.grabObjects);
+      
+      if (intersects.length > 0 && intersects[0].distance < this.maxGrabDistance) {
+        document.body.style.cursor = this.isGrabbing ? 'grabbing' : 'grab';
+      } else {
+        document.body.style.cursor = 'default';
       }
     }
   }
 
-  setupFirstPersonControls() {
-    this.fpControls = new THREE.Object3D(); 
-    this.bus.add(this.fpControls);
-    
-    // Raycaster for object grabbing
-    this.raycaster = new THREE.Raycaster();
-    this.mouse = new THREE.Vector2();
-    this.grabbedObject = null;
-    this.grabStartPosition = new THREE.Vector3();
-    this.playerVelocity = new THREE.Vector3();
-    this.dragDirection = new THREE.Vector3();
-    this.isGrabbing = false;
-    this.grabStartTime = 0;
-    this.grabDistance = 0;
-    this.dragStartPosition = new THREE.Vector2();
-    this.isDragging = false;
-    
-    // Add mouse event listeners for standard mouse interaction
-    document.addEventListener('mousemove', (event) => {
-      // Update mouse position for raycaster
-      this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  handleMouseDown(event) {
+    if (!this.isFirstPerson || this.isGrabbing) return;
 
-      if (this.isGrabbing && this.isFirstPerson) {
-        if (!this.isDragging) {
-          // Check if we've moved enough to start dragging
-          const dx = event.clientX - this.dragStartPosition.x;
-          const dy = event.clientY - this.dragStartPosition.y;
-          const dragDistance = Math.sqrt(dx * dx + dy * dy);
-          
-          if (dragDistance > 10) { // Start drag after 10px movement
-            this.isDragging = true;
-          }
-        }
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.grabObjects);
 
-        if (this.isDragging) {
-          // Calculate drag direction based on mouse movement in world space
-          const movementX = event.movementX / window.innerWidth;
-          const movementY = event.movementY / window.innerHeight;
-          
-          this.dragDirection.set(
-            movementX * 2,
-            -movementY * 2,
-            0
-          );
-          this.dragDirection.applyQuaternion(this.camera.quaternion);
-        }
-      }
-
-      // Rotate camera in first person based on mouse position
-      if (this.isFirstPerson && !this.isGrabbing) {
-        this.camera.rotation.y = -this.mouse.x * Math.PI / 2;
-        this.camera.rotation.x = -this.mouse.y * Math.PI / 4;
-      }
-    });
-
-    document.addEventListener('mousedown', (event) => {
-      if (!this.isFirstPerson || this.isGrabbing) return;
-      
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      
-      // Get all grabbable objects (seats, walls, etc.)
-      const grabbables = [...this.bus.children].filter(obj => 
-        obj.isMesh && !obj.material.transparent
-      );
-      
-      const intersects = this.raycaster.intersectObjects(grabbables);
-      
-      if (intersects.length > 0 && intersects[0].distance < 5) { 
-        this.isGrabbing = true;
-        this.isDragging = false;
-        this.grabbedObject = intersects[0].object;
-        this.grabStartPosition.copy(intersects[0].point);
-        this.grabDistance = intersects[0].distance;
-        this.grabStartTime = Date.now();
-        this.dragStartPosition = new THREE.Vector2(event.clientX, event.clientY);
-        this.playerVelocity.set(0, 0, 0);
-        
-        // Visual feedback for grabbed object
-        const originalColor = this.grabbedObject.material.color.clone();
-        this.grabbedObject.material.color.setHex(0xffff00);
-        setTimeout(() => {
-          if (this.grabbedObject) {
-            this.grabbedObject.material.color.copy(originalColor);
-          }
-        }, 100);
-      }
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (!this.isFirstPerson || !this.isGrabbing) return;
-      
-      const grabDuration = Date.now() - this.grabStartTime;
-      
-      if (this.isDragging) {
-        // Apply impulse when releasing drag
-        const pushStrength = 5;
-        this.playerVelocity.copy(this.dragDirection).multiplyScalar(pushStrength);
-      }
-      
-      this.isGrabbing = false;
+    if (intersects.length > 0 && intersects[0].distance < this.maxGrabDistance) {
+      this.isGrabbing = true;
       this.isDragging = false;
-      this.grabbedObject = null;
-    });
+      this.grabbedObject = intersects[0].object;
+      this.grabPoint.copy(intersects[0].point);
+      this.dragStartPosition.set(event.clientX, event.clientY);
+      
+      // Visual feedback
+      const originalColor = this.grabbedObject.material.color.clone();
+      this.grabbedObject.material.color.setHex(0xffff00);
+      setTimeout(() => {
+        if (this.grabbedObject) {
+          this.grabbedObject.material.color.copy(originalColor);
+        }
+      }, 100);
+    }
+  }
 
-    // Add a cursor element to show what can be grabbed
-    this.cursor = document.createElement('div');
-    this.cursor.style.position = 'fixed';
-    this.cursor.style.width = '20px';
-    this.cursor.style.height = '20px';
-    this.cursor.style.border = '2px solid white';
-    this.cursor.style.borderRadius = '50%';
-    this.cursor.style.pointerEvents = 'none';
-    this.cursor.style.transform = 'translate(-50%, -50%)';
-    this.cursor.style.display = 'none';
-    document.body.appendChild(this.cursor);
+  handleMouseUp() {
+    if (!this.isFirstPerson || !this.isGrabbing) return;
+
+    if (this.isDragging && this.dragDirection.lengthSq() > 0.001) {
+      // Apply push-off force
+      this.playerVelocity.add(this.dragDirection);
+    }
+
+    this.isGrabbing = false;
+    this.isDragging = false;
+    this.grabbedObject = null;
+    this.dragDirection.set(0, 0, 0);
   }
 
   updateFirstPersonMovement(delta) {
     if (!this.isFirstPerson) return;
 
-    // Update cursor position and appearance
-    if (this.isFirstPerson) {
-      this.cursor.style.display = 'block';
-      this.cursor.style.left = ((this.mouse.x + 1) / 2) * window.innerWidth + 'px';
-      this.cursor.style.top = ((-this.mouse.y + 1) / 2) * window.innerHeight + 'px';
+    if (this.isGrabbing && this.grabbedObject && !this.isDragging) {
+      // Pull towards grab point when holding
+      const toGrab = this.grabPoint.clone().sub(this.camera.position);
+      const distance = toGrab.length();
       
-      // Check if something is grabbable
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const grabbables = [...this.bus.children].filter(obj => 
-        obj.isMesh && !obj.material.transparent
-      );
-      const intersects = this.raycaster.intersectObjects(grabbables);
-      
-      if (intersects.length > 0 && intersects[0].distance < 5) {
-        this.cursor.style.borderColor = '#00ff00';
-      } else {
-        this.cursor.style.borderColor = 'white';
-      }
-    } else {
-      this.cursor.style.display = 'none';
-    }
-
-    if (this.isGrabbing && this.grabbedObject) {
-      if (this.isDragging) {
-        // When dragging, accumulate force for push-off
-        const dragAmount = this.dragDirection.length();
-        if (dragAmount > 0.01) {
-          this.dragDirection.normalize();
-        }
-      } else {
-        // When just holding, pull towards grab point
-        const pullSpeed = 2;
-        const targetPosition = this.grabStartPosition.clone();
-        const direction = targetPosition.sub(this.camera.position).normalize();
-        this.playerVelocity.add(direction.multiplyScalar(pullSpeed * delta));
+      if (distance > this.minGrabDistance) {
+        toGrab.normalize().multiplyScalar(this.pullForce * delta);
+        this.playerVelocity.add(toGrab);
       }
     }
 
-    // Apply velocity and damping when floating
-    this.playerVelocity.multiplyScalar(0.98);
-
+    // Apply velocity with damping
+    this.playerVelocity.multiplyScalar(this.damping);
+    
+    // Calculate new position
     const newPosition = this.camera.position.clone()
       .add(this.playerVelocity.clone().multiplyScalar(delta));
-    
-    // Check bounds before applying movement
-    const busBox = new THREE.Box3().setFromObject(this.mainBoundary);
+
+    // Check bounds
+    const busBox = new THREE.Box3().setFromObject(this.bus);
     const margin = 0.3;
-    
     busBox.min.add(new THREE.Vector3(margin, margin, margin));
     busBox.max.sub(new THREE.Vector3(margin, margin, margin));
 
     if (busBox.containsPoint(newPosition)) {
       this.camera.position.copy(newPosition);
     } else {
-      // Bounce off walls with reduced velocity
+      // Bounce off walls
       this.playerVelocity.multiplyScalar(-0.5);
     }
-  }
-
-  setupMovementControls() {
-    // Removed keyboard controls
   }
 
   toggleView() {
