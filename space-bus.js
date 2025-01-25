@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import TWEEN from '@tweenjs/tween.js';
 
 class SpaceBus {
   constructor() {
@@ -350,18 +351,9 @@ class SpaceBus {
   }
 
   setupFirstPersonControls() {
-    this.fpControls = new PointerLockControls(this.camera, document.body);
+    this.fpControls = new THREE.Object3D(); 
+    this.bus.add(this.fpControls);
     
-    this.fpControls.addEventListener('lock', () => {
-      this.controlsInfo.style.display = 'none';
-    });
-
-    this.fpControls.addEventListener('unlock', () => {
-      if (this.isFirstPerson) {
-        this.controlsInfo.style.display = 'block';
-      }
-    });
-
     // Raycaster for object grabbing
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
@@ -372,12 +364,34 @@ class SpaceBus {
     this.isGrabbing = false;
     this.grabDistance = 0;
     
-    // Add mouse event listeners
+    // Add mouse event listeners for standard mouse interaction
+    document.addEventListener('mousemove', (event) => {
+      // Update mouse position for raycaster
+      this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+      if (this.isGrabbing && this.isFirstPerson) {
+        // Calculate drag direction based on mouse movement in world space
+        const movementX = event.movementX / window.innerWidth;
+        const movementY = event.movementY / window.innerHeight;
+        
+        this.dragDirection.set(
+          movementX * 2,
+          -movementY * 2,
+          0
+        );
+        this.dragDirection.applyQuaternion(this.camera.quaternion);
+      }
+
+      // Rotate camera in first person based on mouse position
+      if (this.isFirstPerson && !this.isGrabbing) {
+        this.camera.rotation.y = -this.mouse.x * Math.PI / 2;
+        this.camera.rotation.x = -this.mouse.y * Math.PI / 4;
+      }
+    });
+
     document.addEventListener('mousedown', (event) => {
-      if (!this.isFirstPerson || !this.fpControls.isLocked) return;
-      
-      this.mouse.x = 0; // Center of screen in pointer lock
-      this.mouse.y = 0;
+      if (!this.isFirstPerson) return;
       
       this.raycaster.setFromCamera(this.mouse, this.camera);
       
@@ -388,39 +402,48 @@ class SpaceBus {
       
       const intersects = this.raycaster.intersectObjects(grabbables);
       
-      if (intersects.length > 0 && intersects[0].distance < 3) { // Only grab within 3 units
+      if (intersects.length > 0 && intersects[0].distance < 5) { 
         this.isGrabbing = true;
         this.grabbedObject = intersects[0].object;
         this.grabStartPosition.copy(intersects[0].point);
         this.grabDistance = intersects[0].distance;
-        this.playerVelocity.set(0, 0, 0); // Stop current momentum
+        this.playerVelocity.set(0, 0, 0); 
+        
+        // Visual feedback for grabbed object
+        const originalColor = this.grabbedObject.material.color.clone();
+        this.grabbedObject.material.color.setHex(0xffff00);
+        setTimeout(() => {
+          if (this.grabbedObject) {
+            this.grabbedObject.material.color.copy(originalColor);
+          }
+        }, 100);
       }
     });
 
-    document.addEventListener('mousemove', (event) => {
-      if (!this.isGrabbing || !this.isFirstPerson || !this.fpControls.isLocked) return;
-      
-      // Calculate drag direction based on mouse movement
-      this.dragDirection.set(
-        event.movementX * 0.01,
-        -event.movementY * 0.01,
-        0
-      );
-      this.dragDirection.applyQuaternion(this.camera.quaternion);
-    });
-
     document.addEventListener('mouseup', () => {
-      if (!this.isFirstPerson || !this.fpControls.isLocked) return;
+      if (!this.isFirstPerson) return;
       
       if (this.isGrabbing) {
         // Apply impulse when releasing grab
-        const pushStrength = 2;
+        const pushStrength = 3;
         this.playerVelocity.copy(this.dragDirection).multiplyScalar(pushStrength);
         
         this.isGrabbing = false;
         this.grabbedObject = null;
       }
     });
+
+    // Add a cursor element to show what can be grabbed
+    this.cursor = document.createElement('div');
+    this.cursor.style.position = 'fixed';
+    this.cursor.style.width = '20px';
+    this.cursor.style.height = '20px';
+    this.cursor.style.border = '2px solid white';
+    this.cursor.style.borderRadius = '50%';
+    this.cursor.style.pointerEvents = 'none';
+    this.cursor.style.transform = 'translate(-50%, -50%)';
+    this.cursor.style.display = 'none';
+    document.body.appendChild(this.cursor);
   }
 
   setupMovementControls() {
@@ -428,11 +451,33 @@ class SpaceBus {
   }
 
   updateFirstPersonMovement(delta) {
-    if (!this.isFirstPerson || !this.fpControls.isLocked) return;
+    if (!this.isFirstPerson) return;
+
+    // Update cursor position and appearance
+    if (this.isFirstPerson) {
+      this.cursor.style.display = 'block';
+      this.cursor.style.left = ((this.mouse.x + 1) / 2) * window.innerWidth + 'px';
+      this.cursor.style.top = ((-this.mouse.y + 1) / 2) * window.innerHeight + 'px';
+      
+      // Check if something is grabbable
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      const grabbables = [...this.bus.children].filter(obj => 
+        obj.isMesh && !obj.material.transparent
+      );
+      const intersects = this.raycaster.intersectObjects(grabbables);
+      
+      if (intersects.length > 0 && intersects[0].distance < 5) {
+        this.cursor.style.borderColor = '#00ff00';
+      } else {
+        this.cursor.style.borderColor = 'white';
+      }
+    } else {
+      this.cursor.style.display = 'none';
+    }
 
     if (this.isGrabbing && this.grabbedObject) {
       // When grabbing, move toward or away from grab point based on drag
-      const moveSpeed = 2;
+      const moveSpeed = 3;
       const dragAmount = this.dragDirection.length();
       
       if (dragAmount > 0.01) {
@@ -452,8 +497,8 @@ class SpaceBus {
       }
     } else {
       // Apply velocity and damping when floating
-      this.playerVelocity.multiplyScalar(0.98); // Slight damping
-      
+      this.playerVelocity.multiplyScalar(0.98); 
+ 
       const newPosition = this.camera.position.clone()
         .add(this.playerVelocity.clone().multiplyScalar(delta));
       
@@ -478,16 +523,11 @@ class SpaceBus {
     
     if (this.isFirstPerson) {
       this.controls.enabled = false;
-      this.fpControls.lock();
-      this.controlsInfo.style.display = 'block';
-      
       // Position the camera at head height inside the bus
       this.camera.position.set(0, 0.5, 6);
       this.camera.rotation.set(0, Math.PI, 0);
     } else {
       this.controls.enabled = true;
-      this.fpControls.unlock();
-      this.controlsInfo.style.display = 'none';
       
       // Return to third-person view
       new TWEEN.Tween(this.camera.position)
@@ -554,7 +594,7 @@ class SpaceBus {
   animate() {
     requestAnimationFrame(() => this.animate());
     
-    const delta = 0.016; // Assuming ~60fps
+    const delta = 0.016; 
     
     this.updateBusPosition();
     this.updateFirstPersonMovement(delta);
